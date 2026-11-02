@@ -69,7 +69,7 @@ app.get("/", (req, res) => {
   res.json({
     name: "DivineAPI",
     description: "Personal API for Divine projects",
-    version: "2.3.0",
+    version: "2.4.0",
     status: "online"
   });
 });
@@ -79,7 +79,7 @@ app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     service: "DivineAPI",
-    version: "2.3.0",
+    version: "2.4.0",
     status: "online"
   });
 });
@@ -108,6 +108,170 @@ app.get("/api/projects", async (req, res) => {
 
   } catch (error) {
     console.error("Projects error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected error occurred."
+    });
+  }
+});
+
+// PUBLISH API
+app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
+  try {
+    const {
+      name,
+      slug,
+      description,
+      category,
+      base_url,
+      version,
+      auth_type
+    } = req.body || {};
+
+    // Validate required fields
+    if (
+      typeof name !== "string" ||
+      typeof slug !== "string" ||
+      typeof description !== "string" ||
+      typeof category !== "string" ||
+      typeof base_url !== "string"
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide all required API details."
+      });
+    }
+
+    if (
+      !name.trim() ||
+      !slug.trim() ||
+      !description.trim() ||
+      !category.trim() ||
+      name.length > 100 ||
+      slug.length > 100 ||
+      description.length > 2000 ||
+      category.length > 60
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "One or more fields are invalid or too long."
+      });
+    }
+
+    // Validate slug
+    const cleanSlug = slug.trim().toLowerCase();
+
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cleanSlug)) {
+      return res.status(400).json({
+        success: false,
+        error: "Slug must use lowercase letters, numbers and hyphens."
+      });
+    }
+
+    // Validate HTTPS URL
+    let parsedUrl;
+
+    try {
+      parsedUrl = new URL(base_url.trim());
+
+      if (
+        parsedUrl.protocol !== "https:" ||
+        parsedUrl.username ||
+        parsedUrl.password
+      ) {
+        throw new Error("Invalid URL");
+      }
+    } catch {
+      return res.status(400).json({
+        success: false,
+        error: "Enter a valid public HTTPS base URL."
+      });
+    }
+
+    // Validate authentication type
+    const selectedAuth = auth_type || "None";
+    const allowedAuth = ["None", "API Key", "Bearer Token"];
+
+    if (!allowedAuth.includes(selectedAuth)) {
+      return res.status(400).json({
+        success: false,
+        error: "Unsupported authentication type."
+      });
+    }
+
+    const cleanVersion =
+      typeof version === "string" && version.trim()
+        ? version.trim()
+        : "1.0.0";
+
+    if (cleanVersion.length > 30) {
+      return res.status(400).json({
+        success: false,
+        error: "Version is too long."
+      });
+    }
+
+    // Create Supabase client using the signed-in user's token
+    const userClient = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_KEY,
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${req.token}`
+          }
+        },
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false
+        }
+      }
+    );
+
+    // Save API submission
+    const { data, error } = await userClient
+      .from("apis")
+      .insert({
+        provider_id: req.user.id,
+        name: name.trim(),
+        slug: cleanSlug,
+        description: description.trim(),
+        category: category.trim(),
+        base_url: parsedUrl.origin,
+        version: cleanVersion,
+        auth_type: selectedAuth,
+        status: "Pending"
+      })
+      .select(
+        "id, name, slug, description, category, base_url, version, auth_type, status, created_at"
+      )
+      .single();
+
+    if (error) {
+      console.error("API publishing error:", error.message);
+
+      if (error.code === "23505") {
+        return res.status(409).json({
+          success: false,
+          error: "That API slug is already in use."
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        error: "Could not submit your API."
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "API submitted successfully. It is awaiting admin approval.",
+      api: data
+    });
+
+  } catch (error) {
+    console.error("API publishing error:", error.message);
 
     return res.status(500).json({
       success: false,
