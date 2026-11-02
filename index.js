@@ -6,6 +6,7 @@ require("dotenv").config();
 
 const app = express();
 
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
@@ -25,6 +26,7 @@ const supabase = createClient(
   }
 );
 
+// Authentication middleware
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
@@ -36,38 +38,48 @@ async function requireAuth(req, res, next) {
     });
   }
 
-  const { data, error } = await supabase.auth.getUser(token);
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
 
-  if (error || !data.user) {
+    if (error || !data.user) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or expired access token."
+      });
+    }
+
+    req.user = data.user;
+    req.token = token;
+    next();
+  } catch (error) {
     return res.status(401).json({
       success: false,
-      error: "Invalid or expired access token."
+      error: "Authentication failed."
     });
   }
-
-  req.user = data.user;
-  req.token = token;
-  next();
 }
 
+// Homepage
 app.get("/", (req, res) => {
   res.json({
     name: "DivineAPI",
     description: "Personal API for Divine projects",
-    version: "2.1.0",
+    version: "2.2.0",
     status: "online"
   });
 });
 
+// API status
 app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     service: "DivineAPI",
-    version: "2.1.0",
+    version: "2.2.0",
     status: "online"
   });
 });
 
+// Projects
 app.get("/api/projects", (req, res) => {
   res.json({
     success: true,
@@ -76,6 +88,20 @@ app.get("/api/projects", (req, res) => {
       { name: "DivineSocial", status: "In development" },
       { name: "DivineAPI", status: "Active" }
     ]
+  });
+});
+
+// Request-body diagnostic
+// Does not return the submitted email or other body values.
+app.post("/api/debug/request-body", (req, res) => {
+  const body = req.body || {};
+
+  res.json({
+    success: true,
+    contentType: req.headers["content-type"] || "missing",
+    bodyType: typeof req.body,
+    bodyKeys: Object.keys(body),
+    emailFieldReceived: typeof body.email === "string" && Boolean(body.email.trim())
   });
 });
 
@@ -235,15 +261,28 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 // FORGOT PASSWORD
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
+    // Accept email from parsed JSON or URL-encoded body.
     const body = req.body || {};
-    const email = typeof body.email === "string" ? body.email.trim() : "";
-
-    console.log("Forgot password request received. Email field present:", Boolean(email));
+    const email =
+      typeof body.email === "string"
+        ? body.email.trim()
+        : "";
 
     if (!email) {
       return res.status(400).json({
         success: false,
-        error: "A valid email is required. Send JSON with an email field."
+        error: "Email was not received. Check the request body.",
+        contentType: req.headers["content-type"] || "missing",
+        receivedBodyKeys: Object.keys(body)
+      });
+    }
+
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!emailPattern.test(email)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide a valid email address."
       });
     }
 
@@ -304,7 +343,7 @@ app.post("/api/message", async (req, res) => {
       });
 
     if (error) {
-      console.error("Supabase message error:", error.message);
+      console.error("Message error:", error.message);
       return res.status(500).json({
         success: false,
         error: "Could not save the message."
