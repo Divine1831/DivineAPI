@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 const { createClient } = require("@supabase/supabase-js");
@@ -5,12 +6,12 @@ require("dotenv").config();
 
 const app = express();
 
-// Middleware
+// MIDDLEWARE
 app.use(cors());
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 
-// Supabase configuration
+// SUPABASE CONFIGURATION
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   throw new Error("Missing Supabase environment variables.");
 }
@@ -26,7 +27,9 @@ const supabase = createClient(
   }
 );
 
-// Authentication middleware
+const FRONTEND_URL = "https://divineapi-platform.vercel.app";
+
+// AUTHENTICATION MIDDLEWARE
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ")
@@ -64,27 +67,27 @@ async function requireAuth(req, res, next) {
   }
 }
 
-// Homepage
+// HOMEPAGE
 app.get("/", (req, res) => {
   res.json({
     name: "DivineAPI",
     description: "Personal API for Divine projects",
-    version: "2.4.0",
+    version: "2.5.0",
     status: "online"
   });
 });
 
-// API status
+// API STATUS
 app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     service: "DivineAPI",
-    version: "2.4.0",
+    version: "2.5.0",
     status: "online"
   });
 });
 
-// PROJECTS — LOAD FROM SUPABASE
+// PROJECTS
 app.get("/api/projects", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -105,7 +108,6 @@ app.get("/api/projects", async (req, res) => {
       success: true,
       projects: data
     });
-
   } catch (error) {
     console.error("Projects error:", error.message);
 
@@ -129,7 +131,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       auth_type
     } = req.body || {};
 
-    // Validate required fields
     if (
       typeof name !== "string" ||
       typeof slug !== "string" ||
@@ -159,7 +160,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       });
     }
 
-    // Validate slug
     const cleanSlug = slug.trim().toLowerCase();
 
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cleanSlug)) {
@@ -169,7 +169,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       });
     }
 
-    // Validate HTTPS URL
     let parsedUrl;
 
     try {
@@ -189,7 +188,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       });
     }
 
-    // Validate authentication type
     const selectedAuth = auth_type || "None";
     const allowedAuth = ["None", "API Key", "Bearer Token"];
 
@@ -212,7 +210,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       });
     }
 
-    // Create Supabase client using the signed-in user's token
     const userClient = createClient(
       process.env.SUPABASE_URL,
       process.env.SUPABASE_KEY,
@@ -229,7 +226,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       }
     );
 
-    // Save API submission
     const { data, error } = await userClient
       .from("apis")
       .insert({
@@ -269,7 +265,6 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       message: "API submitted successfully. It is awaiting admin approval.",
       api: data
     });
-
   } catch (error) {
     console.error("API publishing error:", error.message);
 
@@ -302,7 +297,7 @@ app.post("/api/auth/register", async (req, res) => {
       email: email.trim(),
       password,
       options: {
-        emailRedirectTo: "https://divinetube-6-0.vercel.app/"
+        emailRedirectTo: FRONTEND_URL + "/"
       }
     });
 
@@ -324,7 +319,6 @@ app.post("/api/auth/register", async (req, res) => {
         : null,
       needsEmailVerification: !data.session
     });
-
   } catch (error) {
     console.error("Registration error:", error.message);
 
@@ -375,7 +369,6 @@ app.post("/api/auth/login", async (req, res) => {
         email: data.user.email
       }
     });
-
   } catch (error) {
     console.error("Login error:", error.message);
 
@@ -433,7 +426,6 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
       success: true,
       message: "Logout request completed. Clear stored tokens in your app."
     });
-
   } catch (error) {
     console.error("Logout error:", error.message);
 
@@ -473,8 +465,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     const { error } = await supabase.auth.resetPasswordForEmail(
       email,
       {
-        redirectTo:
-          "https://divinetube-6-0.vercel.app/update-password.html"
+        redirectTo: FRONTEND_URL + "/update-password.html"
       }
     );
 
@@ -491,13 +482,12 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       success: true,
       message: "If the account exists, a reset email will be sent."
     });
-
   } catch (error) {
     console.error("Forgot password error:", error.message);
 
     return res.status(500).json({
       success: false,
-      error: error.message || "Password reset request failed."
+      error: "Password reset request failed."
     });
   }
 });
@@ -546,7 +536,6 @@ app.post("/api/message", async (req, res) => {
       success: true,
       message: "Your message was saved!"
     });
-
   } catch (error) {
     console.error("Message error:", error.message);
 
