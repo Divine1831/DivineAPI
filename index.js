@@ -84,16 +84,36 @@ app.get("/api/status", (req, res) => {
   });
 });
 
-// Projects
-app.get("/api/projects", (req, res) => {
-  res.json({
-    success: true,
-    projects: [
-      { name: "DivineTube", status: "Active" },
-      { name: "DivineSocial", status: "In development" },
-      { name: "DivineAPI", status: "Active" }
-    ]
-  });
+// PROJECTS — LOAD FROM SUPABASE
+app.get("/api/projects", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("projects")
+      .select("id, name, status, description, created_at")
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Projects error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        error: "Could not load projects."
+      });
+    }
+
+    return res.json({
+      success: true,
+      projects: data
+    });
+
+  } catch (error) {
+    console.error("Projects error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected error occurred."
+    });
+  }
 });
 
 // REGISTER
