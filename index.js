@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
@@ -8,10 +9,9 @@ const app = express();
 
 // MIDDLEWARE
 app.use(cors({
-  origin: [
-    "https://divineapi-platform.vercel.app"
-  ]
+  origin: ["https://divineapi-platform.vercel.app"]
 }));
+
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 
@@ -31,11 +31,30 @@ const supabase = createClient(
   }
 );
 
-const FRONTEND_URL = "https://divineapi-platform.vercel.app";
+// PRIVILEGED SERVER-ONLY SUPABASE CLIENT
+// Never expose this key in frontend code or commit it to GitHub.
+if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  throw new Error("Missing server-side Supabase secret.");
+}
 
-// AUTHENTICATION MIDDLEWARE
+const adminSupabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
+  }
+);
+
+const FRONTEND_URL = "https://divineapi-platform.vercel.app";
+const API_VERSION = "2.7.0";
+
+// AUTHENTICATION: SUPABASE USER ACCESS TOKEN
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
+
   const token = header.startsWith("Bearer ")
     ? header.slice(7)
     : "";
@@ -59,13 +78,98 @@ async function requireAuth(req, res, next) {
 
     req.user = data.user;
     req.token = token;
-    next();
+
+    return next();
   } catch (error) {
     console.error("Authentication error:", error.message);
 
     return res.status(401).json({
       success: false,
       error: "Authentication failed."
+    });
+  }
+}
+
+// AUTHENTICATION: DIVINEAPI DEVELOPER API KEY
+async function requireApiKey(req, res, next) {
+  const rawKey = req.get("x-api-key");
+
+  if (
+    typeof rawKey !== "string" ||
+    !/^divine_live_[A-Za-z0-9_-]{30,}$/.test(rawKey)
+  ) {
+    return res.status(401).json({
+      success: false,
+      error: "A valid x-api-key header is required."
+    });
+  }
+
+  try {
+    const keyHash = crypto
+      .createHash("sha256")
+      .update(rawKey)
+      .digest("hex");
+
+    const { data: key, error } = await adminSupabase
+      .from("api_keys")
+      .select("id, user_id, expires_at")
+      .eq("key_hash", keyHash)
+      .is("revoked_at", null)
+      .maybeSingle();
+
+    if (error) {
+      console.error("API key lookup error:", error.message);
+
+      return res.status(500).json({
+        success: false,
+        error: "Could not verify API key."
+      });
+    }
+
+    if (!key) {
+      return res.status(401).json({
+        success: false,
+        error: "Invalid or revoked API key."
+      });
+    }
+
+    if (
+      key.expires_at &&
+      new Date(key.expires_at).getTime() <= Date.now()
+    ) {
+      return res.status(401).json({
+        success: false,
+        error: "API key has expired."
+      });
+    }
+
+    const { error: updateError } = await adminSupabase
+      .from("api_keys")
+      .update({
+        last_used_at: new Date().toISOString()
+      })
+      .eq("id", key.id);
+
+    if (updateError) {
+      console.error(
+        "API key usage update error:",
+        updateError.message
+      );
+    }
+
+    req.apiUser = {
+      id: key.user_id
+    };
+
+    req.apiKeyId = key.id;
+
+    return next();
+  } catch (error) {
+    console.error("API key authentication error:", error.message);
+
+    return res.status(500).json({
+      success: false,
+      error: "API key authentication failed."
     });
   }
 }
@@ -94,7 +198,7 @@ app.get("/", (req, res) => {
   res.json({
     name: "DivineAPI",
     description: "Personal API for Divine projects",
-    version: "2.6.0",
+    version: API_VERSION,
     status: "online"
   });
 });
@@ -104,7 +208,7 @@ app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     service: "DivineAPI",
-    version: "2.6.0",
+    version: API_VERSION,
     status: "online"
   });
 });
@@ -119,6 +223,7 @@ app.get("/api/projects", async (req, res) => {
 
     if (error) {
       console.error("Projects error:", error.message);
+
       return res.status(500).json({
         success: false,
         error: "Could not load projects."
@@ -131,6 +236,7 @@ app.get("/api/projects", async (req, res) => {
     });
   } catch (error) {
     console.error("Projects error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
@@ -209,7 +315,12 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
     }
 
     const selectedAuth = auth_type || "None";
-    const allowedAuth = ["None", "API Key", "Bearer Token"];
+
+    const allowedAuth = [
+      "None",
+      "API Key",
+      "Bearer Token"
+    ];
 
     if (!allowedAuth.includes(selectedAuth)) {
       return res.status(400).json({
@@ -271,6 +382,7 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("API publishing error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
@@ -282,7 +394,9 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
 app.post("/api/keys/generate", requireAuth, async (req, res) => {
   try {
     const name =
-      typeof req.body?.name === "string" ? req.body.name.trim() : "";
+      typeof req.body?.name === "string"
+        ? req.body.name.trim()
+        : "";
 
     if (!name || name.length > 60) {
       return res.status(400).json({
@@ -291,9 +405,16 @@ app.post("/api/keys/generate", requireAuth, async (req, res) => {
       });
     }
 
-    // The raw key is returned only once. Only its SHA-256 hash is stored.
-    const rawKey = "divine_live_" + crypto.randomBytes(32).toString("base64url");
-    const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
+    // Raw key is returned once. Only its hash is stored.
+    const rawKey =
+      "divine_live_" +
+      crypto.randomBytes(32).toString("base64url");
+
+    const keyHash = crypto
+      .createHash("sha256")
+      .update(rawKey)
+      .digest("hex");
+
     const keyPrefix = rawKey.slice(0, 16);
 
     const { data, error } = await userSupabase(req)
@@ -309,6 +430,7 @@ app.post("/api/keys/generate", requireAuth, async (req, res) => {
 
     if (error) {
       console.error("API key generation error:", error.message);
+
       return res.status(500).json({
         success: false,
         error: "Could not generate an API key."
@@ -323,6 +445,7 @@ app.post("/api/keys/generate", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("API key generation error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
@@ -335,12 +458,15 @@ app.get("/api/keys", requireAuth, async (req, res) => {
   try {
     const { data, error } = await userSupabase(req)
       .from("api_keys")
-      .select("id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at")
+      .select(
+        "id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at"
+      )
       .eq("user_id", req.user.id)
       .order("created_at", { ascending: false });
 
     if (error) {
       console.error("API key list error:", error.message);
+
       return res.status(500).json({
         success: false,
         error: "Could not load API keys."
@@ -353,6 +479,7 @@ app.get("/api/keys", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("API key list error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
@@ -365,7 +492,9 @@ app.post("/api/keys/:id/revoke", requireAuth, async (req, res) => {
   try {
     const { data, error } = await userSupabase(req)
       .from("api_keys")
-      .update({ revoked_at: new Date().toISOString() })
+      .update({
+        revoked_at: new Date().toISOString()
+      })
       .eq("id", req.params.id)
       .eq("user_id", req.user.id)
       .is("revoked_at", null)
@@ -374,6 +503,7 @@ app.post("/api/keys/:id/revoke", requireAuth, async (req, res) => {
 
     if (error) {
       console.error("API key revoke error:", error.message);
+
       return res.status(500).json({
         success: false,
         error: "Could not revoke API key."
@@ -394,11 +524,21 @@ app.post("/api/keys/:id/revoke", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("API key revoke error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
     });
   }
+});
+
+// TEST API KEY AUTHENTICATION
+app.get("/api/developer/me", requireApiKey, (req, res) => {
+  return res.json({
+    success: true,
+    message: "API key authentication successful!",
+    user_id: req.apiUser.id
+  });
 });
 
 // REGISTER
@@ -447,6 +587,7 @@ app.post("/api/auth/register", async (req, res) => {
     });
   } catch (error) {
     console.error("Registration error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Registration failed."
@@ -496,6 +637,7 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Login failed."
@@ -505,7 +647,7 @@ app.post("/api/auth/login", async (req, res) => {
 
 // CURRENT USER
 app.get("/api/auth/me", requireAuth, (req, res) => {
-  res.json({
+  return res.json({
     success: true,
     user: {
       id: req.user.id,
@@ -523,6 +665,7 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 
     if (error) {
       console.error("Logout error:", error.message);
+
       return res.status(400).json({
         success: false,
         error: "Logout failed."
@@ -535,6 +678,7 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("Logout error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Logout failed."
@@ -546,8 +690,11 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const body = req.body || {};
+
     const email =
-      typeof body.email === "string" ? body.email.trim() : "";
+      typeof body.email === "string"
+        ? body.email.trim()
+        : "";
 
     if (!email) {
       return res.status(400).json({
@@ -571,6 +718,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
 
     if (error) {
       console.error("Password reset error:", error.message);
+
       return res.status(400).json({
         success: false,
         error: error.message
@@ -583,6 +731,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     });
   } catch (error) {
     console.error("Forgot password error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Password reset request failed."
@@ -623,6 +772,7 @@ app.post("/api/message", async (req, res) => {
 
     if (error) {
       console.error("Message error:", error.message);
+
       return res.status(500).json({
         success: false,
         error: "Could not save the message."
@@ -635,6 +785,7 @@ app.post("/api/message", async (req, res) => {
     });
   } catch (error) {
     console.error("Message error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected server error occurred."
