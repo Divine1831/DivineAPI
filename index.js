@@ -338,7 +338,7 @@ app.get("/api/marketplace/apis", async (req, res) => {
     let query = supabase
       .from("apis")
       .select(
-        "id, name, slug, description, category, base_url, version, auth_type, created_at",
+        "id, name, slug, description, category, base_url, version, auth_type, status, created_at",
         { count: "exact" }
       )
       .eq("status", "Approved")
@@ -418,7 +418,7 @@ app.get("/api/marketplace/apis/:slug", async (req, res) => {
     const { data, error } = await supabase
       .from("apis")
       .select(
-        "id, name, slug, description, category, base_url, version, auth_type, created_at"
+        "id, name, slug, description, category, base_url, version, auth_type, status, created_at"
       )
       .eq("slug", slug)
       .eq("status", "Approved")
