@@ -1,4 +1,3 @@
-
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
@@ -7,12 +6,13 @@ require("dotenv").config();
 
 const app = express();
 
-const VERSION = "2.9.0";
+const VERSION = "3.0.0";
 const FRONTEND_URL = "https://divineapi-platform.vercel.app";
+const ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 app.use(cors({
   origin: FRONTEND_URL,
-  methods: ["GET", "POST", "PATCH", "OPTIONS"],
+  methods: [...ALLOWED_METHODS, "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "x-api-key"]
 }));
 
@@ -45,7 +45,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
 });
 
 // Privileged client: SERVER ONLY.
-// Never expose its key in frontend code.
 const adminSupabase = createClient(
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
@@ -71,6 +70,10 @@ function userSupabase(token) {
   });
 }
 
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
+
 function sendError(res, status, message) {
   return res.status(status).json({
     success: false,
@@ -93,6 +96,7 @@ function validUuid(value) {
 
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
+
   const token = header.startsWith("Bearer ")
     ? header.slice(7).trim()
     : "";
@@ -141,6 +145,7 @@ async function requireAdmin(req, res, next) {
     }
 
     req.adminRole = data.role;
+
     return next();
   } catch (error) {
     console.error("Admin middleware error:", error.message);
@@ -246,7 +251,11 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
     const cleanSlug = slug.trim().toLowerCase();
 
     if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(cleanSlug)) {
-      return sendError(res, 400, "Slug must use lowercase letters, numbers and hyphens.");
+      return sendError(
+        res,
+        400,
+        "Slug must use lowercase letters, numbers and hyphens."
+      );
     }
 
     let parsedUrl;
@@ -327,6 +336,7 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
 app.get("/api/marketplace/apis", async (req, res) => {
   try {
     const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+
     const limit = Math.min(
       30,
       Math.max(1, Number.parseInt(req.query.limit, 10) || 12)
@@ -383,7 +393,10 @@ app.get("/api/marketplace/apis", async (req, res) => {
   }
 });
 
+// --------------------------------------------------
 // MARKETPLACE CATEGORIES
+// --------------------------------------------------
+
 app.get("/api/marketplace/categories", async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -410,7 +423,10 @@ app.get("/api/marketplace/categories", async (req, res) => {
   }
 });
 
+// --------------------------------------------------
 // SINGLE MARKETPLACE API
+// --------------------------------------------------
+
 app.get("/api/marketplace/apis/:slug", async (req, res) => {
   try {
     const slug = String(req.params.slug || "").trim().toLowerCase();
@@ -444,10 +460,332 @@ app.get("/api/marketplace/apis/:slug", async (req, res) => {
 });
 
 // --------------------------------------------------
+// API PROVIDER DOCUMENTATION
+// --------------------------------------------------
+
+// Validate endpoint paths
+function validEndpointPath(path) {
+  return (
+    typeof path === "string" &&
+    path.length <= 200 &&
+    path.startsWith("/") &&
+    !path.startsWith("//") &&
+    !/[?#\s]/.test(path)
+  );
+}
+
+// Validate documentation data
+function validateEndpointBody(body, partial = false) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return "A valid JSON request body is required.";
+  }
+
+  if (!partial || body.name !== undefined) {
+    if (
+      typeof body.name !== "string" ||
+      !body.name.trim() ||
+      body.name.length > 100
+    ) {
+      return "Endpoint name must be 1 to 100 characters.";
+    }
+  }
+
+  if (!partial || body.method !== undefined) {
+    if (!ALLOWED_METHODS.includes(body.method)) {
+      return "Method must be GET, POST, PUT, PATCH or DELETE.";
+    }
+  }
+
+  if (!partial || body.path !== undefined) {
+    if (!validEndpointPath(body.path)) {
+      return "Enter a valid endpoint path beginning with /.";
+    }
+  }
+
+  if (!partial || body.description !== undefined) {
+    if (
+      typeof body.description !== "string" ||
+      !body.description.trim() ||
+      body.description.length > 2000
+    ) {
+      return "Description must be 1 to 2000 characters.";
+    }
+  }
+
+  if (body.parameters !== undefined) {
+    if (
+      !Array.isArray(body.parameters) ||
+      body.parameters.length > 50
+    ) {
+      return "Parameters must be an array containing at most 50 items.";
+    }
+  }
+
+  for (const field of ["request_example", "response_example"]) {
+    if (
+      body[field] !== undefined &&
+      body[field] !== null &&
+      typeof body[field] !== "object"
+    ) {
+      return `${field} must be a JSON object or array.`;
+    }
+  }
+
+  return null;
+}
+
+// ADD ENDPOINT DOCUMENTATION
+app.post(
+  "/api/marketplace/apis/:slug/endpoints",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const slug = String(req.params.slug || "").trim().toLowerCase();
+
+      const validationError = validateEndpointBody(req.body);
+
+      if (validationError) {
+        return sendError(res, 400, validationError);
+      }
+
+      const { data: api, error: apiError } = await req.userClient
+        .from("apis")
+        .select("id, provider_id, slug")
+        .eq("slug", slug)
+        .eq("provider_id", req.user.id)
+        .maybeSingle();
+
+      if (apiError) {
+        console.error("Endpoint API lookup error:", apiError.message);
+        return sendError(res, 500, "Could not verify API ownership.");
+      }
+
+      if (!api) {
+        return sendError(res, 404, "Your API was not found.");
+      }
+
+      const {
+        name,
+        method,
+        path,
+        description,
+        parameters = [],
+        request_example = null,
+        response_example = null
+      } = req.body;
+
+      const { data, error } = await req.userClient
+        .from("api_endpoints")
+        .insert({
+          api_id: api.id,
+          provider_id: req.user.id,
+          name: name.trim(),
+          method,
+          path,
+          description: description.trim(),
+          parameters,
+          request_example,
+          response_example
+        })
+        .select(
+          "id, api_id, name, method, path, description, parameters, request_example, response_example, created_at, updated_at"
+        )
+        .single();
+
+      if (error) {
+        console.error("Add endpoint error:", error.message);
+        return sendError(res, 500, "Could not save endpoint documentation.");
+      }
+
+      return res.status(201).json({
+        success: true,
+        message: "Endpoint documentation created.",
+        endpoint: data
+      });
+    } catch (error) {
+      console.error("Add endpoint error:", error.message);
+      return sendError(res, 500, "Unexpected server error.");
+    }
+  }
+);
+
+// LIST DOCUMENTATION FOR AN APPROVED API
+app.get(
+  "/api/marketplace/apis/:slug/endpoints",
+  async (req, res) => {
+    try {
+      const slug = String(req.params.slug || "").trim().toLowerCase();
+
+      const { data: api, error: apiError } = await supabase
+        .from("apis")
+        .select("id, slug")
+        .eq("slug", slug)
+        .eq("status", "Approved")
+        .maybeSingle();
+
+      if (apiError) {
+        console.error("Endpoint API lookup error:", apiError.message);
+        return sendError(res, 500, "Could not load API information.");
+      }
+
+      if (!api) {
+        return sendError(res, 404, "Approved API not found.");
+      }
+
+      const { data, error } = await supabase
+        .from("api_endpoints")
+        .select(
+          "id, name, method, path, description, parameters, request_example, response_example, created_at, updated_at"
+        )
+        .eq("api_id", api.id)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        console.error("List endpoints error:", error.message);
+        return sendError(res, 500, "Could not load endpoint documentation.");
+      }
+
+      return res.json({
+        success: true,
+        api_slug: api.slug,
+        total: (data || []).length,
+        endpoints: data || []
+      });
+    } catch (error) {
+      console.error("List endpoints error:", error.message);
+      return sendError(res, 500, "Unexpected server error.");
+    }
+  }
+);
+
+// EDIT ENDPOINT DOCUMENTATION
+app.patch(
+  "/api/marketplace/endpoints/:id",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+
+      if (!validUuid(id)) {
+        return sendError(res, 400, "Invalid endpoint ID.");
+      }
+
+      const validationError = validateEndpointBody(req.body, true);
+
+      if (validationError) {
+        return sendError(res, 400, validationError);
+      }
+
+      const allowedFields = [
+        "name",
+        "method",
+        "path",
+        "description",
+        "parameters",
+        "request_example",
+        "response_example"
+      ];
+
+      const updates = {};
+
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updates[field] = req.body[field];
+
+          if (field === "name" || field === "description") {
+            updates[field] = req.body[field].trim();
+          }
+        }
+      }
+
+      if (Object.keys(updates).length === 0) {
+        return sendError(res, 400, "Provide at least one field to update.");
+      }
+
+      updates.updated_at = new Date().toISOString();
+
+      const { data, error } = await req.userClient
+        .from("api_endpoints")
+        .update(updates)
+        .eq("id", id)
+        .select(
+          "id, name, method, path, description, parameters, request_example, response_example, updated_at"
+        )
+        .maybeSingle();
+
+      if (error) {
+        console.error("Update endpoint error:", error.message);
+        return sendError(res, 500, "Could not update endpoint documentation.");
+      }
+
+      if (!data) {
+        return sendError(
+          res,
+          404,
+          "Endpoint not found or you do not own it."
+        );
+      }
+
+      return res.json({
+        success: true,
+        message: "Endpoint documentation updated.",
+        endpoint: data
+      });
+    } catch (error) {
+      console.error("Update endpoint error:", error.message);
+      return sendError(res, 500, "Unexpected server error.");
+    }
+  }
+);
+
+// DELETE ENDPOINT DOCUMENTATION
+app.delete(
+  "/api/marketplace/endpoints/:id",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const id = req.params.id;
+
+      if (!validUuid(id)) {
+        return sendError(res, 400, "Invalid endpoint ID.");
+      }
+
+      const { data, error } = await req.userClient
+        .from("api_endpoints")
+        .delete()
+        .eq("id", id)
+        .select("id, name")
+        .maybeSingle();
+
+      if (error) {
+        console.error("Delete endpoint error:", error.message);
+        return sendError(res, 500, "Could not delete endpoint documentation.");
+      }
+
+      if (!data) {
+        return sendError(
+          res,
+          404,
+          "Endpoint not found or you do not own it."
+        );
+      }
+
+      return res.json({
+        success: true,
+        message: "Endpoint documentation deleted.",
+        endpoint: data
+      });
+    } catch (error) {
+      console.error("Delete endpoint error:", error.message);
+      return sendError(res, 500, "Unexpected server error.");
+    }
+  }
+);
+
+// --------------------------------------------------
 // ADMIN DASHBOARD
 // --------------------------------------------------
 
-// Admin profile and overview
 app.get(
   "/api/admin/dashboard",
   requireAuth,
@@ -498,7 +836,7 @@ app.get(
   }
 );
 
-// List pending submissions
+// LIST PENDING SUBMISSIONS
 app.get(
   "/api/admin/apis/pending",
   requireAuth,
@@ -529,7 +867,7 @@ app.get(
   }
 );
 
-// Approve a pending API
+// APPROVE A PENDING API
 app.post(
   "/api/admin/apis/:id/approve",
   requireAuth,
@@ -571,7 +909,7 @@ app.post(
   }
 );
 
-// Reject a pending API
+// REJECT A PENDING API
 app.post(
   "/api/admin/apis/:id/reject",
   requireAuth,
@@ -613,7 +951,7 @@ app.post(
   }
 );
 
-// Only Super Admin can add another admin
+// ONLY SUPER ADMIN CAN ADD ANOTHER ADMIN
 app.post(
   "/api/admin/admins",
   requireAuth,
@@ -661,7 +999,7 @@ app.post(
 // API KEY MANAGEMENT
 // --------------------------------------------------
 
-// Generate a developer API key
+// GENERATE A DEVELOPER API KEY
 app.post("/api/keys/generate", requireAuth, async (req, res) => {
   try {
     const name = typeof req.body?.name === "string"
@@ -706,7 +1044,7 @@ app.post("/api/keys/generate", requireAuth, async (req, res) => {
   }
 });
 
-// List user's API keys
+// LIST USER'S API KEYS
 app.get("/api/keys", requireAuth, async (req, res) => {
   try {
     const { data, error } = await req.userClient
@@ -731,7 +1069,7 @@ app.get("/api/keys", requireAuth, async (req, res) => {
   }
 });
 
-// Revoke a user's own key
+// REVOKE A USER'S OWN KEY
 app.post("/api/keys/:id/revoke", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -818,7 +1156,7 @@ async function requireApiKey(req, res, next) {
   }
 }
 
-// Developer test endpoint
+// DEVELOPER TEST ENDPOINT
 app.get("/api/developer/me", requireApiKey, (req, res) => {
   return res.json({
     success: true,
