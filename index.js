@@ -1,12 +1,17 @@
 const express = require("express");
 const cors = require("cors");
+const crypto = require("crypto");
 const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const app = express();
 
 // MIDDLEWARE
-app.use(cors());
+app.use(cors({
+  origin: [
+    "https://divineapi-platform.vercel.app"
+  ]
+}));
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 
@@ -54,7 +59,6 @@ async function requireAuth(req, res, next) {
 
     req.user = data.user;
     req.token = token;
-
     next();
   } catch (error) {
     console.error("Authentication error:", error.message);
@@ -66,12 +70,31 @@ async function requireAuth(req, res, next) {
   }
 }
 
+// USER-SCOPED SUPABASE CLIENT
+function userSupabase(req) {
+  return createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY,
+    {
+      global: {
+        headers: {
+          Authorization: `Bearer ${req.token}`
+        }
+      },
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false
+      }
+    }
+  );
+}
+
 // HOMEPAGE
 app.get("/", (req, res) => {
   res.json({
     name: "DivineAPI",
     description: "Personal API for Divine projects",
-    version: "2.5.0",
+    version: "2.6.0",
     status: "online"
   });
 });
@@ -81,7 +104,7 @@ app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     service: "DivineAPI",
-    version: "2.5.0",
+    version: "2.6.0",
     status: "online"
   });
 });
@@ -96,7 +119,6 @@ app.get("/api/projects", async (req, res) => {
 
     if (error) {
       console.error("Projects error:", error.message);
-
       return res.status(500).json({
         success: false,
         error: "Could not load projects."
@@ -109,7 +131,6 @@ app.get("/api/projects", async (req, res) => {
     });
   } catch (error) {
     console.error("Projects error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
@@ -209,23 +230,7 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
       });
     }
 
-    const userClient = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_KEY,
-      {
-        global: {
-          headers: {
-            Authorization: `Bearer ${req.token}`
-          }
-        },
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false
-        }
-      }
-    );
-
-    const { data, error } = await userClient
+    const { data, error } = await userSupabase(req)
       .from("apis")
       .insert({
         provider_id: req.user.id,
@@ -266,7 +271,129 @@ app.post("/api/marketplace/publish", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("API publishing error:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected error occurred."
+    });
+  }
+});
 
+// GENERATE API KEY
+app.post("/api/keys/generate", requireAuth, async (req, res) => {
+  try {
+    const name =
+      typeof req.body?.name === "string" ? req.body.name.trim() : "";
+
+    if (!name || name.length > 60) {
+      return res.status(400).json({
+        success: false,
+        error: "Provide a key name between 1 and 60 characters."
+      });
+    }
+
+    // The raw key is returned only once. Only its SHA-256 hash is stored.
+    const rawKey = "divine_live_" + crypto.randomBytes(32).toString("base64url");
+    const keyHash = crypto.createHash("sha256").update(rawKey).digest("hex");
+    const keyPrefix = rawKey.slice(0, 16);
+
+    const { data, error } = await userSupabase(req)
+      .from("api_keys")
+      .insert({
+        user_id: req.user.id,
+        name,
+        key_prefix: keyPrefix,
+        key_hash: keyHash
+      })
+      .select("id, name, key_prefix, created_at")
+      .single();
+
+    if (error) {
+      console.error("API key generation error:", error.message);
+      return res.status(500).json({
+        success: false,
+        error: "Could not generate an API key."
+      });
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: "API key generated. Copy it now; it will not be shown again.",
+      api_key: rawKey,
+      key: data
+    });
+  } catch (error) {
+    console.error("API key generation error:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected error occurred."
+    });
+  }
+});
+
+// LIST THE SIGNED-IN USER'S API KEYS
+app.get("/api/keys", requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await userSupabase(req)
+      .from("api_keys")
+      .select("id, name, key_prefix, created_at, last_used_at, expires_at, revoked_at")
+      .eq("user_id", req.user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("API key list error:", error.message);
+      return res.status(500).json({
+        success: false,
+        error: "Could not load API keys."
+      });
+    }
+
+    return res.json({
+      success: true,
+      keys: data
+    });
+  } catch (error) {
+    console.error("API key list error:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: "An unexpected error occurred."
+    });
+  }
+});
+
+// REVOKE API KEY
+app.post("/api/keys/:id/revoke", requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await userSupabase(req)
+      .from("api_keys")
+      .update({ revoked_at: new Date().toISOString() })
+      .eq("id", req.params.id)
+      .eq("user_id", req.user.id)
+      .is("revoked_at", null)
+      .select("id, name, key_prefix, revoked_at")
+      .maybeSingle();
+
+    if (error) {
+      console.error("API key revoke error:", error.message);
+      return res.status(500).json({
+        success: false,
+        error: "Could not revoke API key."
+      });
+    }
+
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        error: "Active API key not found."
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "API key revoked successfully.",
+      key: data
+    });
+  } catch (error) {
+    console.error("API key revoke error:", error.message);
     return res.status(500).json({
       success: false,
       error: "An unexpected error occurred."
@@ -320,7 +447,6 @@ app.post("/api/auth/register", async (req, res) => {
     });
   } catch (error) {
     console.error("Registration error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Registration failed."
@@ -370,7 +496,6 @@ app.post("/api/auth/login", async (req, res) => {
     });
   } catch (error) {
     console.error("Login error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Login failed."
@@ -392,29 +517,12 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
 // LOGOUT
 app.post("/api/auth/logout", requireAuth, async (req, res) => {
   try {
-    const userClient = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_KEY,
-      {
-        global: {
-          headers: {
-            Authorization: `Bearer ${req.token}`
-          }
-        },
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false
-        }
-      }
-    );
-
-    const { error } = await userClient.auth.signOut({
+    const { error } = await userSupabase(req).auth.signOut({
       scope: "local"
     });
 
     if (error) {
       console.error("Logout error:", error.message);
-
       return res.status(400).json({
         success: false,
         error: "Logout failed."
@@ -427,7 +535,6 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("Logout error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Logout failed."
@@ -439,11 +546,8 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const body = req.body || {};
-
     const email =
-      typeof body.email === "string"
-        ? body.email.trim()
-        : "";
+      typeof body.email === "string" ? body.email.trim() : "";
 
     if (!email) {
       return res.status(400).json({
@@ -461,16 +565,12 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       });
     }
 
-    const { error } = await supabase.auth.resetPasswordForEmail(
-      email,
-      {
-        redirectTo: FRONTEND_URL + "/update-password.html"
-      }
-    );
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: FRONTEND_URL + "/update-password.html"
+    });
 
     if (error) {
       console.error("Password reset error:", error.message);
-
       return res.status(400).json({
         success: false,
         error: error.message
@@ -483,7 +583,6 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     });
   } catch (error) {
     console.error("Forgot password error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "Password reset request failed."
@@ -524,7 +623,6 @@ app.post("/api/message", async (req, res) => {
 
     if (error) {
       console.error("Message error:", error.message);
-
       return res.status(500).json({
         success: false,
         error: "Could not save the message."
@@ -537,7 +635,6 @@ app.post("/api/message", async (req, res) => {
     });
   } catch (error) {
     console.error("Message error:", error.message);
-
     return res.status(500).json({
       success: false,
       error: "An unexpected server error occurred."
