@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
@@ -6,7 +7,7 @@ require("dotenv").config();
 
 const app = express();
 
-const VERSION = "3.0.0";
+const VERSION = "3.1.0";
 const FRONTEND_URL = "https://divineapi-platform.vercel.app";
 const ALLOWED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -145,7 +146,6 @@ async function requireAdmin(req, res, next) {
     }
 
     req.adminRole = data.role;
-
     return next();
   } catch (error) {
     console.error("Admin middleware error:", error.message);
@@ -463,7 +463,6 @@ app.get("/api/marketplace/apis/:slug", async (req, res) => {
 // API PROVIDER DOCUMENTATION
 // --------------------------------------------------
 
-// Validate endpoint paths
 function validEndpointPath(path) {
   return (
     typeof path === "string" &&
@@ -474,7 +473,6 @@ function validEndpointPath(path) {
   );
 }
 
-// Validate documentation data
 function validateEndpointBody(body, partial = false) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return "A valid JSON request body is required.";
@@ -513,10 +511,7 @@ function validateEndpointBody(body, partial = false) {
   }
 
   if (body.parameters !== undefined) {
-    if (
-      !Array.isArray(body.parameters) ||
-      body.parameters.length > 50
-    ) {
+    if (!Array.isArray(body.parameters) || body.parameters.length > 50) {
       return "Parameters must be an array containing at most 50 items.";
     }
   }
@@ -610,53 +605,50 @@ app.post(
 );
 
 // LIST DOCUMENTATION FOR AN APPROVED API
-app.get(
-  "/api/marketplace/apis/:slug/endpoints",
-  async (req, res) => {
-    try {
-      const slug = String(req.params.slug || "").trim().toLowerCase();
+app.get("/api/marketplace/apis/:slug/endpoints", async (req, res) => {
+  try {
+    const slug = String(req.params.slug || "").trim().toLowerCase();
 
-      const { data: api, error: apiError } = await supabase
-        .from("apis")
-        .select("id, slug")
-        .eq("slug", slug)
-        .eq("status", "Approved")
-        .maybeSingle();
+    const { data: api, error: apiError } = await supabase
+      .from("apis")
+      .select("id, slug")
+      .eq("slug", slug)
+      .eq("status", "Approved")
+      .maybeSingle();
 
-      if (apiError) {
-        console.error("Endpoint API lookup error:", apiError.message);
-        return sendError(res, 500, "Could not load API information.");
-      }
-
-      if (!api) {
-        return sendError(res, 404, "Approved API not found.");
-      }
-
-      const { data, error } = await supabase
-        .from("api_endpoints")
-        .select(
-          "id, name, method, path, description, parameters, request_example, response_example, created_at, updated_at"
-        )
-        .eq("api_id", api.id)
-        .order("created_at", { ascending: true });
-
-      if (error) {
-        console.error("List endpoints error:", error.message);
-        return sendError(res, 500, "Could not load endpoint documentation.");
-      }
-
-      return res.json({
-        success: true,
-        api_slug: api.slug,
-        total: (data || []).length,
-        endpoints: data || []
-      });
-    } catch (error) {
-      console.error("List endpoints error:", error.message);
-      return sendError(res, 500, "Unexpected server error.");
+    if (apiError) {
+      console.error("Endpoint API lookup error:", apiError.message);
+      return sendError(res, 500, "Could not load API information.");
     }
+
+    if (!api) {
+      return sendError(res, 404, "Approved API not found.");
+    }
+
+    const { data, error } = await supabase
+      .from("api_endpoints")
+      .select(
+        "id, name, method, path, description, parameters, request_example, response_example, created_at, updated_at"
+      )
+      .eq("api_id", api.id)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("List endpoints error:", error.message);
+      return sendError(res, 500, "Could not load endpoint documentation.");
+    }
+
+    return res.json({
+      success: true,
+      api_slug: api.slug,
+      total: (data || []).length,
+      endpoints: data || []
+    });
+  } catch (error) {
+    console.error("List endpoints error:", error.message);
+    return sendError(res, 500, "Unexpected server error.");
   }
-);
+});
 
 // EDIT ENDPOINT DOCUMENTATION
 app.patch(
@@ -719,11 +711,7 @@ app.patch(
       }
 
       if (!data) {
-        return sendError(
-          res,
-          404,
-          "Endpoint not found or you do not own it."
-        );
+        return sendError(res, 404, "Endpoint not found or you do not own it.");
       }
 
       return res.json({
@@ -763,11 +751,7 @@ app.delete(
       }
 
       if (!data) {
-        return sendError(
-          res,
-          404,
-          "Endpoint not found or you do not own it."
-        );
+        return sendError(res, 404, "Endpoint not found or you do not own it.");
       }
 
       return res.json({
@@ -1377,6 +1361,77 @@ app.post("/api/message", async (req, res) => {
   } catch (error) {
     console.error("Message error:", error.message);
     return sendError(res, 500, "Unexpected server error.");
+  }
+});
+
+// --------------------------------------------------
+// DIVINE WEATHER API
+// --------------------------------------------------
+
+app.get("/api/weather", async (req, res) => {
+  try {
+    const city = String(req.query.city || "").trim();
+
+    if (!city || city.length > 100) {
+      return sendError(res, 400, "Enter a valid city name.");
+    }
+
+    // Find the city's coordinates.
+    const geoResponse = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=en&format=json`
+    );
+
+    if (!geoResponse.ok) {
+      throw new Error("Location service unavailable.");
+    }
+
+    const geoData = await geoResponse.json();
+    const location = geoData.results?.[0];
+
+    if (!location) {
+      return sendError(res, 404, "City not found.");
+    }
+
+    // Retrieve current weather.
+    const weatherResponse = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${location.latitude}&longitude=${location.longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,is_day,precipitation,weather_code,wind_speed_10m&timezone=auto`
+    );
+
+    if (!weatherResponse.ok) {
+      throw new Error("Weather service unavailable.");
+    }
+
+    const weatherData = await weatherResponse.json();
+    const current = weatherData.current;
+
+    if (!current) {
+      throw new Error("Weather data unavailable.");
+    }
+
+    return res.json({
+      success: true,
+      api: "Divine Weather API",
+      city: location.name,
+      country: location.country,
+      temperature: current.temperature_2m,
+      feels_like: current.apparent_temperature,
+      humidity: current.relative_humidity_2m,
+      wind_speed: current.wind_speed_10m,
+      precipitation: current.precipitation,
+      weather_code: current.weather_code,
+      is_day: current.is_day === 1,
+      timezone: weatherData.timezone,
+      source: "Open-Meteo"
+    });
+
+  } catch (error) {
+    console.error("Divine Weather API error:", error.message);
+
+    return sendError(
+      res,
+      502,
+      "Unable to retrieve weather information."
+    );
   }
 });
 
