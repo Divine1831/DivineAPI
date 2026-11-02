@@ -10,6 +10,7 @@ app.use(cors());
 app.use(express.json({ limit: "20kb" }));
 app.use(express.urlencoded({ extended: false, limit: "20kb" }));
 
+// Supabase configuration
 if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
   throw new Error("Missing Supabase environment variables.");
 }
@@ -28,7 +29,9 @@ const supabase = createClient(
 // Authentication middleware
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const token = header.startsWith("Bearer ")
+    ? header.slice(7)
+    : "";
 
   if (!token) {
     return res.status(401).json({
@@ -49,8 +52,11 @@ async function requireAuth(req, res, next) {
 
     req.user = data.user;
     req.token = token;
+
     next();
   } catch (error) {
+    console.error("Authentication error:", error.message);
+
     return res.status(401).json({
       success: false,
       error: "Authentication failed."
@@ -63,7 +69,7 @@ app.get("/", (req, res) => {
   res.json({
     name: "DivineAPI",
     description: "Personal API for Divine projects",
-    version: "2.2.0",
+    version: "2.3.0",
     status: "online"
   });
 });
@@ -73,7 +79,7 @@ app.get("/api/status", (req, res) => {
   res.json({
     success: true,
     service: "DivineAPI",
-    version: "2.2.0",
+    version: "2.3.0",
     status: "online"
   });
 });
@@ -87,20 +93,6 @@ app.get("/api/projects", (req, res) => {
       { name: "DivineSocial", status: "In development" },
       { name: "DivineAPI", status: "Active" }
     ]
-  });
-});
-
-// Request-body diagnostic
-// Does not return the submitted email or other body values.
-app.post("/api/debug/request-body", (req, res) => {
-  const body = req.body || {};
-
-  res.json({
-    success: true,
-    contentType: req.headers["content-type"] || "missing",
-    bodyType: typeof req.body,
-    bodyKeys: Object.keys(body),
-    emailFieldReceived: typeof body.email === "string" && Boolean(body.email.trim())
   });
 });
 
@@ -141,12 +133,17 @@ app.post("/api/auth/register", async (req, res) => {
       success: true,
       message: "Registration received. Check your email for verification.",
       user: data.user
-        ? { id: data.user.id, email: data.user.email }
+        ? {
+            id: data.user.id,
+            email: data.user.email
+          }
         : null,
       needsEmailVerification: !data.session
     });
+
   } catch (error) {
     console.error("Registration error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Registration failed."
@@ -194,8 +191,10 @@ app.post("/api/auth/login", async (req, res) => {
         email: data.user.email
       }
     });
+
   } catch (error) {
     console.error("Login error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Login failed."
@@ -238,6 +237,8 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
     });
 
     if (error) {
+      console.error("Logout error:", error.message);
+
       return res.status(400).json({
         success: false,
         error: "Logout failed."
@@ -248,8 +249,10 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
       success: true,
       message: "Logout request completed. Clear stored tokens in your app."
     });
+
   } catch (error) {
     console.error("Logout error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "Logout failed."
@@ -260,8 +263,8 @@ app.post("/api/auth/logout", requireAuth, async (req, res) => {
 // FORGOT PASSWORD
 app.post("/api/auth/forgot-password", async (req, res) => {
   try {
-    // Accept email from parsed JSON or URL-encoded body.
     const body = req.body || {};
+
     const email =
       typeof body.email === "string"
         ? body.email.trim()
@@ -270,9 +273,7 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     if (!email) {
       return res.status(400).json({
         success: false,
-        error: "Email was not received. Check the request body.",
-        contentType: req.headers["content-type"] || "missing",
-        receivedBodyKeys: Object.keys(body)
+        error: "Email was not received. Check the request body."
       });
     }
 
@@ -285,15 +286,20 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       });
     }
 
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "https://divinetube-6-0.vercel.app/"
-    });
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      email,
+      {
+        redirectTo:
+          "https://divinetube-6-0.vercel.app/update-password.html"
+      }
+    );
 
     if (error) {
       console.error("Password reset error:", error.message);
+
       return res.status(400).json({
         success: false,
-        error: "Password reset request failed."
+        error: error.message
       });
     }
 
@@ -301,11 +307,13 @@ app.post("/api/auth/forgot-password", async (req, res) => {
       success: true,
       message: "If the account exists, a reset email will be sent."
     });
+
   } catch (error) {
     console.error("Forgot password error:", error.message);
+
     return res.status(500).json({
       success: false,
-      error: "Password reset request failed."
+      error: error.message || "Password reset request failed."
     });
   }
 });
@@ -343,6 +351,7 @@ app.post("/api/message", async (req, res) => {
 
     if (error) {
       console.error("Message error:", error.message);
+
       return res.status(500).json({
         success: false,
         error: "Could not save the message."
@@ -353,8 +362,10 @@ app.post("/api/message", async (req, res) => {
       success: true,
       message: "Your message was saved!"
     });
+
   } catch (error) {
     console.error("Message error:", error.message);
+
     return res.status(500).json({
       success: false,
       error: "An unexpected server error occurred."
